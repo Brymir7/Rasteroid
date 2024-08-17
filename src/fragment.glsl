@@ -2,7 +2,7 @@
 
 precision mediump float;
 
-uniform vec4 color;
+in vec4 color;
 
 void main()
 {
