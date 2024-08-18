@@ -40,6 +40,7 @@ struct World {
     next_entity_id: EntityId,
     components: Vec<Vec<PossibleComponent>>,
     pipelines: Vec<Pipeline>,
+    available_entity_ids: Vec<EntityId>,
 }
 
 impl World {
@@ -49,6 +50,7 @@ impl World {
             next_entity_id: 0,
             components: vec![Vec::new(); PossibleComponent::VARIANT_COUNT],
             pipelines: pipelines,
+            available_entity_ids: Vec::new(),
         }
     }
     fn add_component(&mut self, entity: EntityId, component: PossibleComponent) {
@@ -190,6 +192,9 @@ impl World {
         None
     }
     fn create_entity(&mut self) -> EntityId {
+        if let Some(entity) = self.available_entity_ids.pop() {
+            return entity;
+        }
         let entity = self.next_entity_id;
         self.entities.push(entity);
         self.next_entity_id += 1;
@@ -214,21 +219,16 @@ impl World {
             PossibleComponent::RenderData(RenderSystem::create_triangle_render_data(&mut *ctx, 0))
         );
     }
-    fn add_asteroid(&mut self, ctx: &mut Context) {
+    fn add_asteroid(&mut self, ctx: &mut Context, pos: Vec2, vel: Vec2, rot: f32) {
         let asteroid = self.create_entity();
-        self.add_component(
-            asteroid,
-            PossibleComponent::Position(Position(Vec2::new(WORLD_WIDTH / 2.0, WORLD_HEIGHT / 2.0)))
-        );
-        self.add_component(asteroid, PossibleComponent::Rotation(Rotation(0.0)));
-        self.add_component(
-            asteroid,
-            PossibleComponent::Velocity(
-                Velocity(Vec2::new(ASTEROID_BASE_SPEED, ASTEROID_BASE_SPEED))
-            )
-        );
+        self.add_component(asteroid, PossibleComponent::Position(Position(pos)));
+        self.add_component(asteroid, PossibleComponent::Velocity(Velocity(vel)));
+        self.add_component(asteroid, PossibleComponent::Rotation(Rotation(rot)));
         self.add_component(asteroid, PossibleComponent::Health(Health(100.0)));
-        self.add_component(asteroid, PossibleComponent::Collision(Collision { radius: 20.0 }));
+        self.add_component(
+            asteroid,
+            PossibleComponent::Collision(Collision { radius: 20.0 })
+        );
         self.add_component(asteroid, PossibleComponent::EntityType(EntityType::Asteroid));
         self.add_component(
             asteroid,
@@ -247,9 +247,37 @@ impl World {
             PossibleComponent::RenderData(RenderSystem::create_bullet_render_data(&mut *ctx, 0))
         );
     }
+    fn remove_entity(&mut self, entity: EntityId) {
+        self.entities[entity] = std::usize::MAX;
+        self.available_entity_ids.push(entity);
+    }
+    fn handle_collision_events(&mut self, events: Vec<Option<CollisionEvent>>) {
+        for event in events {
+            if let Some(event) = event {
+                match event.event_type {
+                    CollisionEventType::PlayerHit => {
+                        self.remove_entity(event.target);
+                    }
+                    CollisionEventType::PlayerDeath => {
+                        self.remove_entity(event.target);
+                    }
+                    CollisionEventType::AsteroidKilled => {
+                        self.remove_entity(event.triggered_by);
+                    }
+                    CollisionEventType::BulletDestroyed => {
+                        self.remove_entity(event.triggered_by);
+                        self.remove_entity(event.target);
+                    }
+                }
+            }
+        }
+    }
+
     fn update(&mut self) {
         MovementSystem::update(self);
-        CollisionSystem::update(self);
+
+        let collision_events = CollisionSystem::update(self);
+        self.handle_collision_events(collision_events);
     }
     fn draw(&self, ctx: &mut Context) {
         RenderSystem::update(self, ctx);
@@ -300,11 +328,22 @@ impl MovementSystem {
         }
     }
 }
-
+enum CollisionEventType {
+    PlayerHit,
+    PlayerDeath,
+    AsteroidKilled,
+    BulletDestroyed,
+}
+struct CollisionEvent {
+    event_type: CollisionEventType,
+    triggered_by: EntityId,
+    target: EntityId,
+}
 struct CollisionSystem;
 
 impl CollisionSystem {
-    fn update(world: &mut World) {
+    fn update(world: &mut World) -> Vec<Option<CollisionEvent>> {
+        let mut events: Vec<Option<CollisionEvent>> = Vec::new();
         let entities: Vec<EntityId> = world.entities.clone();
         for (i, &entity1) in entities.iter().enumerate() {
             for &entity2 in entities.iter().skip(i + 1) {
@@ -319,14 +358,15 @@ impl CollisionSystem {
                     let distance = pos1.0.distance(pos2.0);
                     if distance < col1.radius + col2.radius {
                         // Handle collision
-                        CollisionSystem::handle_collision(world, entity1, entity2);
+                        events.push(CollisionSystem::handle_collision(world, entity1, entity2));
                     }
                 }
             }
         }
+        events
     }
 
-    fn handle_collision(world: &mut World, entity1: EntityId, entity2: EntityId) {
+    fn handle_collision(world: &mut World, entity1: EntityId, entity2: EntityId) -> Option<CollisionEvent>{
         // Simple collision response: destroy bullets and damage asteroids/player
         let type1 = world.get_entity_type_component(entity1).expect("Entity missing type");
         let type2 = world.get_entity_type_component(entity2).expect("Entity missing type");
@@ -345,8 +385,18 @@ impl CollisionSystem {
                     if health.0 <= 0.0 {
                         // TODO: Remove asteroid
                         println!("Asteroid destroyed!");
+                        return Some(CollisionEvent {
+                            event_type: CollisionEventType::AsteroidKilled,
+                            triggered_by: bullet,
+                            target: asteroid,
+                        });
                     }
                 }
+                return Some(CollisionEvent {
+                    event_type: CollisionEventType::BulletDestroyed,
+                    triggered_by: bullet,
+                    target: asteroid,
+                });
                 // TODO: Remove bullet
             }
             | (EntityType::Player, EntityType::Asteroid)
@@ -355,10 +405,22 @@ impl CollisionSystem {
                 if let Some(health) = world.get_health_component_mut(entity1) {
                     health.0 -= 10.0;
                     println!("Player hit! Health: {}", health.0);
-                }
-            }
+                    if health.0 <= 0.0 {
+                       return Some(CollisionEvent {
+                           event_type: CollisionEventType::PlayerDeath,
+                           triggered_by : entity1,
+                           target: entity2,
+                       }); 
+                    }
+                    return Some(CollisionEvent {
+                        event_type: CollisionEventType::PlayerHit,
+                        triggered_by : entity1,
+                        target: entity2,
+                    });
+            }}
             _ => {}
         }
+        None
     }
 }
 
@@ -416,7 +478,7 @@ impl Stage {
         let pipelines = Stage::load_pipelines(&mut *ctx);
         let mut world = World::new(pipelines);
         world.add_player(&mut *ctx);
-        world.add_asteroid(&mut *ctx);
+        world.add_asteroid(&mut *ctx , Vec2::new(100.0, 100.0), Vec2::new(100.0, 50.0), 0.0);
 
         Stage {
             world,
@@ -511,6 +573,7 @@ impl EventHandler for Stage {
     fn update(&mut self) {
         self.elapsed_time += (date::now() - self.last_time) as f32;
         self.last_time = date::now();
+
         while self.elapsed_time >= PHYSICS_FRAME_TIME {
             self.world.update();
             self.elapsed_time -= PHYSICS_FRAME_TIME;
@@ -519,6 +582,7 @@ impl EventHandler for Stage {
 
     fn draw(&mut self) {
         self.ctx.clear(Some((1.0, 1.0, 1.0, 1.0)), None, None);
+
         match self.ctx.info().backend {
             Backend::OpenGl => {
                 self.world.draw(&mut *self.ctx);
@@ -636,7 +700,7 @@ impl RenderSystem {
 fn main() {
     miniquad::start(
         Conf {
-            window_title: "Asteroids ECS".to_owned(),
+            window_title: "Rasteroids".to_owned(),
             window_width: WORLD_WIDTH as i32,
             window_height: WORLD_HEIGHT as i32,
             ..Default::default()
