@@ -10,13 +10,14 @@ const PLAYER_HITBOX_SIZE: f32 = 20.0;
 const ASTEROID_BASE_SPEED: f32 = 50.0;
 const DEFAULT_SCALE_FACTOR: f32 = 20.0;
 
-// ECS Core
+
 type EntityId = usize;
 
 struct World {
     entities: Vec<EntityId>,
     next_entity_id: EntityId,
-    components: HashMap<std::any::TypeId, Box<dyn AnyMap>>,
+    component_type_to_handle: HashMap<std::any::TypeId, u32>,
+    handle_to_components: Vec<Box<dyn AnyMap>>,
 }
 
 trait AnyMap {
@@ -38,10 +39,71 @@ impl World {
         World {
             entities: Vec::new(),
             next_entity_id: 0,
-            components: HashMap::new(),
+            component_type_to_handle: HashMap::new(),
+            handle_to_components: Vec::new(),
         }
     }
-
+    fn get_component<T: 'static>(&self, entity: EntityId) -> Option<&T> {
+        let type_id = std::any::TypeId::of::<T>();
+        if let Some(handle) = self.component_type_to_handle.get(&type_id) {
+            if let Some(map) = self.handle_to_components.get(*handle as usize) {
+                if let Some(components) = map.as_any().downcast_ref::<HashMap<EntityId, T>>() {
+                    return components.get(&entity);
+                }
+            }
+        }
+        None
+    }
+    fn get_component_mut<T: 'static>(&mut self, entity: EntityId) -> Option<&mut T> {
+        let type_id = std::any::TypeId::of::<T>();
+        if let Some(handle) = self.component_type_to_handle.get(&type_id) {
+            if let Some(map) = self.handle_to_components.get_mut(*handle as usize) {
+                if let Some(components) = map.as_any_mut().downcast_mut::<HashMap<EntityId, T>>() {
+                    return components.get_mut(&entity);
+                }
+            }
+        }
+        None
+    }
+    fn add_component<T: 'static>(&mut self, entity: EntityId, component: T) {
+        let type_id = std::any::TypeId::of::<T>();
+        if let Some(handle) = self.component_type_to_handle.get(&type_id) {
+            if let Some(map) = self.handle_to_components.get_mut(*handle as usize) {
+                if let Some(components) = map.as_any_mut().downcast_mut::<HashMap<EntityId, T>>() {
+                    components.insert(entity, component);
+                    return;
+                }
+            }
+        }
+        let mut new_map = HashMap::new();
+        new_map.insert(entity, component);
+        let new_handle = self.handle_to_components.len() as u32;
+        self.component_type_to_handle.insert(type_id, new_handle);
+        self.handle_to_components.push(Box::new(new_map));
+    }
+    fn get_multiple_components_mut<T1: 'static, T2: 'static>(&mut self, entity: EntityId) -> Option<(&mut T1, &mut T2)> {
+        let type_id1 = std::any::TypeId::of::<T1>();
+        let type_id2 = std::any::TypeId::of::<T2>();
+        assert!(type_id1 != type_id2); // u dont need to get the same type twice
+        if let (Some(handle1), Some(handle2)) = (
+            self.component_type_to_handle.get(&type_id1),
+            self.component_type_to_handle.get(&type_id2)
+        ) {
+            let (left, right) = self.handle_to_components.split_at_mut(*handle2 as usize);
+            if let Some(map1) = left.get_mut(*handle1 as usize) {
+                if let Some(map2) = right.get_mut(0) {
+                    if let Some(components1) = map1.as_any_mut().downcast_mut::<HashMap<EntityId, T1>>() {
+                        if let Some(components2) = map2.as_any_mut().downcast_mut::<HashMap<EntityId, T2>>() { 
+                            if let (Some(comp1), Some(comp2)) = (components1.get_mut(&entity), components2.get_mut(&entity)) {
+                                return Some((comp1, comp2));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
     fn create_entity(&mut self) -> EntityId {
         let entity = self.next_entity_id;
         self.entities.push(entity);
@@ -49,51 +111,6 @@ impl World {
         entity
     }
 
-    fn add_component<T: 'static>(&mut self, entity: EntityId, component: T) {
-        let component_store = self.components
-            .entry(std::any::TypeId::of::<T>())
-            .or_insert_with(|| Box::new(HashMap::<EntityId, T>::new()));
-
-        let store = component_store.as_any_mut().downcast_mut::<HashMap<EntityId, T>>().unwrap();
-        store.insert(entity, component);
-    }
-
-    fn get_component<T: 'static>(&self, entity: EntityId) -> Option<&T> {
-        self.components
-            .get(&std::any::TypeId::of::<T>())
-            .and_then(|boxed| boxed.as_any().downcast_ref::<HashMap<EntityId, T>>())
-            .and_then(|store| store.get(&entity))
-    }
-
-    fn get_component_mut<T: 'static>(&mut self, entity: EntityId) -> Option<&mut T> {
-        self.components
-            .get_mut(&std::any::TypeId::of::<T>())
-            .and_then(|boxed| boxed.as_any_mut().downcast_mut::<HashMap<EntityId, T>>())
-            .and_then(|store| store.get_mut(&entity))
-    }
-    fn get_multiple_components<T: 'static>(&self, entity: EntityId) -> Option<Vec<&T>> {
-        self.components
-            .get(&std::any::TypeId::of::<T>())
-            .and_then(|boxed| boxed.as_any().downcast_ref::<HashMap<EntityId, T>>())
-            .map(|store| { store.get(&entity).into_iter().collect() })
-    }
-    fn get_multiple_components_mut<T: 'static>(&mut self, entity: EntityId) -> Option<Vec<&mut T>> {
-        self.components
-            .get_mut(&std::any::TypeId::of::<T>())
-            .and_then(|boxed| boxed.as_any_mut().downcast_mut::<HashMap<EntityId, T>>())
-            .map(|store| { store.get_mut(&entity).into_iter().collect() })
-    }
-    fn remove_component<T: 'static>(&mut self, entity: EntityId) {
-        if let Some(store) = self.components.get_mut(&std::any::TypeId::of::<T>()) {
-            store.as_any_mut().downcast_mut::<HashMap<EntityId, T>>().unwrap().remove(&entity);
-        }
-    }
-    fn remove_entity(&mut self, entity: EntityId) {
-        for store in self.components.values_mut() {
-            store.as_any_mut().downcast_mut::<HashMap<EntityId, ()>>().unwrap().remove(&entity);
-        }
-        self.entities.retain(|&e| e != entity);
-    }
     fn update(&mut self) {
         MovementSystem::update(self);
         CollisionSystem::update(self);
@@ -138,11 +155,12 @@ impl MovementSystem {
         let entities_to_update: Vec<EntityId> = world.entities.iter().cloned().collect(); // NOTE avoid borrowing issues
 
         for entity in entities_to_update {
-            let mut_pos_vel = world.get_multiple_components_mut::<(Position, Velocity)>(entity);
+
+            let mut_pos_vel = world.get_multiple_components_mut::<Position, Velocity>(entity);
             if let Some(mut_pos_vel) = mut_pos_vel {
-                assert!(mut_pos_vel.len() == 1);
-                let (mut pos, mut vel) = mut_pos_vel[0];
+                let ( pos,  vel) = mut_pos_vel;
                 pos.0 += vel.0 * PHYSICS_FRAME_TIME;
+
             }
         }
     }
@@ -374,8 +392,14 @@ impl EventHandler for Stage {
     }
 
     fn key_down_event(&mut self, keycode: KeyCode, _keymods: KeyMods, _repeat: bool) {
+        assert!(match self.world.get_component::<EntityType>(0).unwrap() {
+            EntityType::Player => true,
+            _ => false,
+        });
         if let Some(vel) = self.world.get_component_mut::<Velocity>(0) {
             // Assuming player is always entity 0
+            println!("Key down: {:?}", keycode);
+            println!("Player velocity: {:?}", vel.0);
             match keycode {
                 KeyCode::W => {
                     vel.0.y -= 100.0;
