@@ -18,6 +18,7 @@ struct World {
     next_entity_id: EntityId,
     component_type_to_handle: HashMap<std::any::TypeId, u32>,
     handle_to_components: Vec<Box<dyn AnyMap>>,
+    pipelines: Vec<Pipeline>,
 }
 
 trait AnyMap {
@@ -35,12 +36,13 @@ impl<T: 'static> AnyMap for HashMap<EntityId, T> {
 }
 
 impl World {
-    fn new() -> Self {
+    fn new(pipelines: Vec<Pipeline>) -> Self {
         World {
             entities: Vec::new(),
             next_entity_id: 0,
             component_type_to_handle: HashMap::new(),
             handle_to_components: Vec::new(),
+            pipelines: pipelines,
         }
     }
     fn get_component<T: 'static>(&self, entity: EntityId) -> Option<&T> {
@@ -81,7 +83,7 @@ impl World {
         self.component_type_to_handle.insert(type_id, new_handle);
         self.handle_to_components.push(Box::new(new_map));
     }
-    fn get_multiple_components_mut<T1: 'static, T2: 'static>(&mut self, entity: EntityId) -> Option<(&mut T1, &mut T2)> {
+    fn get_tuple_components_mut<T1: 'static, T2: 'static>(&mut self, entity: EntityId) -> Option<(&mut T1, &mut T2)> {
         let type_id1 = std::any::TypeId::of::<T1>();
         let type_id2 = std::any::TypeId::of::<T2>();
         assert!(type_id1 != type_id2); // u dont need to get the same type twice
@@ -139,7 +141,7 @@ struct RenderData {
     vertices: Vec<Vec2>,
     vertex_buffer: BufferId,
     index_buffer: BufferId,
-    pipeline: Pipeline,
+    pipeline_handle: u8,
 }
 
 enum EntityType {
@@ -156,7 +158,7 @@ impl MovementSystem {
 
         for entity in entities_to_update {
 
-            let mut_pos_vel = world.get_multiple_components_mut::<Position, Velocity>(entity);
+            let mut_pos_vel = world.get_tuple_components_mut::<Position, Velocity>(entity);
             if let Some(mut_pos_vel) = mut_pos_vel {
                 let ( pos,  vel) = mut_pos_vel;
                 pos.0 += vel.0 * PHYSICS_FRAME_TIME;
@@ -225,7 +227,9 @@ impl CollisionSystem {
     }
 }
 
-struct RenderSystem;
+struct RenderSystem {
+
+}
 
 impl RenderSystem {
     fn update(world: &World, ctx: &mut Context) {
@@ -251,7 +255,7 @@ impl RenderSystem {
                     index_buffer: render_data.index_buffer,
                     images: vec![],
                 };
-                ctx.apply_pipeline(&render_data.pipeline);
+                ctx.apply_pipeline(&world.pipelines[render_data.pipeline_handle as usize]);
                 ctx.apply_bindings(&bindings);
                 ctx.apply_uniforms(UniformsSource::table(&mvp));
                 ctx.draw(0, render_data.vertices.len() as i32, 1);
@@ -265,16 +269,14 @@ struct Stage {
     world: World,
     ctx: Box<dyn RenderingBackend>,
     elapsed_time: f32,
-    pipelines: Vec<Pipeline>,
     last_time: f64,
 }
 
 impl Stage {
     fn new() -> Self {
         let mut ctx = window::new_rendering_backend();
-        let mut world = World::new();
         let pipelines = Stage::load_shaders(&mut *ctx);
-
+        let mut world = World::new(pipelines);
         // Create player
         let player = world.create_entity();
         world.add_component(player, Position(Vec2::new(WORLD_WIDTH / 2.0, WORLD_HEIGHT / 2.0)));
@@ -284,7 +286,7 @@ impl Stage {
         world.add_component(player, EntityType::Player);
         world.add_component(
             player,
-            RenderSystem::create_triangle_render_data(&mut *ctx, pipelines[0])
+            RenderSystem::create_triangle_render_data(&mut *ctx, 0)
         );
 
         let asteroid = world.create_entity();
@@ -298,14 +300,13 @@ impl Stage {
         world.add_component(asteroid, EntityType::Asteroid);
         world.add_component(
             asteroid,
-            RenderSystem::create_asteroid_render_data(&mut *ctx, pipelines[1])
+            RenderSystem::create_asteroid_render_data(&mut *ctx, 1)
         );
 
         Stage {
             world,
             ctx,
             elapsed_time: 0.0,
-            pipelines: pipelines,
             last_time: date::now(),
         }
     }
@@ -424,7 +425,7 @@ impl EventHandler for Stage {
                             bullet,
                             RenderSystem::create_bullet_render_data(
                                 &mut *self.ctx,
-                                self.pipelines[0]
+                                0
                             )
                         );
                     }
@@ -436,12 +437,12 @@ impl EventHandler for Stage {
 }
 
 impl RenderSystem {
-    fn create_triangle_render_data(ctx: &mut Context, pipeline: Pipeline) -> RenderData {
+    fn create_triangle_render_data(ctx: &mut Context, pipeline_handle: u8) -> RenderData {
         let vertices = vec![Vec2::new(-0.5, 0.5), Vec2::new(0.5, 0.5), Vec2::new(0.0, -0.8)];
-        Self::create_render_data(ctx, &vertices, &[0, 1, 2], pipeline)
+        Self::create_render_data(ctx, &vertices, &[0, 1, 2], pipeline_handle)
     }
 
-    fn create_asteroid_render_data(ctx: &mut Context, pipeline: Pipeline) -> RenderData {
+    fn create_asteroid_render_data(ctx: &mut Context, pipeline_handle: u8) -> RenderData {
         let vertices = (0..8)
             .map(|i| {
                 let angle = ((i as f32) * std::f32::consts::PI) / 4.0;
@@ -449,24 +450,24 @@ impl RenderSystem {
             })
             .collect::<Vec<_>>();
         let indices = (1..7).flat_map(|i| vec![0, i, i + 1]).collect::<Vec<_>>();
-        Self::create_render_data(ctx, &vertices, &indices, pipeline)
+        Self::create_render_data(ctx, &vertices, &indices, pipeline_handle)
     }
 
-    fn create_bullet_render_data(ctx: &mut Context, pipeline: Pipeline) -> RenderData {
+    fn create_bullet_render_data(ctx: &mut Context, pipeline_handle: u8) -> RenderData {
         let vertices = vec![
             Vec2::new(-0.1, 0.3),
             Vec2::new(0.1, 0.3),
             Vec2::new(0.1, -0.3),
             Vec2::new(-0.1, -0.3)
         ];
-        Self::create_render_data(ctx, &vertices, &[0, 1, 2, 0, 2, 3], pipeline)
+        Self::create_render_data(ctx, &vertices, &[0, 1, 2, 0, 2, 3], pipeline_handle)
     }
 
     fn create_render_data(
         ctx: &mut Context,
         vertices: &[Vec2],
         indices: &[u16],
-        pipeline: Pipeline
+        pipeline_handle: u8
     ) -> RenderData {
         let mut vertex_buffer_data: Vec<f32> = Vec::new();
         for vertex in vertices {
@@ -491,7 +492,7 @@ impl RenderSystem {
             vertices: vertices.to_vec(),
             vertex_buffer,
             index_buffer,
-            pipeline,
+            pipeline_handle,
         }
     }
 }
