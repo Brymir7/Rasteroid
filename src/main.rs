@@ -2,10 +2,10 @@ use conf::Conf;
 use miniquad::*;
 use glam::{ vec3, Mat4, Quat, Vec2 };
 use rand::Rng;
-use std::collections::{ btree_set, HashSet };
+use std::collections::HashSet;
 
-const WORLD_WIDTH: f32 = 800.0;
-const WORLD_HEIGHT: f32 = 600.0;
+const WORLD_WIDTH: f32 = 1200.0;
+const WORLD_HEIGHT: f32 = 800.0;
 const PHYSICS_FRAME_TIME: f32 = 1.0 / 60.0;
 const PLAYER_HITBOX_SIZE: f32 = 10.0;
 const ASTEROID_BASE_SPEED: f32 = 50.0;
@@ -140,7 +140,6 @@ impl CameraShake {
         let offset = Vec2::new(angle.cos(), angle.sin()) * self.intensity * damping;
         offset
     }
-
 }
 enum WorldEvent {
     CameraShake,
@@ -534,10 +533,10 @@ impl RenderSystem {
         entity_types: &[EntityType],
         pipelines: &[Pipeline],
         camera_shake: &mut Option<CameraShake>,
-        dt : f32
+        dt: f32
     ) {
         let proj = Mat4::orthographic_rh_gl(0.0, WORLD_WIDTH, WORLD_HEIGHT, 0.0, -1.0, 1.0);
-        let shake_offset = camera_shake.as_mut().map_or(Vec2::ZERO, |shake| shake.update( dt));
+        let shake_offset = camera_shake.as_mut().map_or(Vec2::ZERO, |shake| shake.update(dt));
         for i in 0..positions.len() {
             let pos = positions[i];
             let rotation = rotations[i];
@@ -570,7 +569,7 @@ impl RenderSystem {
             ctx.apply_pipeline(&pipelines[render_data.pipeline_handle as usize]);
             ctx.apply_bindings(&bindings);
             let screen_size = Vec2::new(WORLD_WIDTH, WORLD_HEIGHT);
-            ctx.apply_uniforms(UniformsSource::table(&(mvp, shake_offset, screen_size))); 
+            ctx.apply_uniforms(UniformsSource::table(&(mvp, shake_offset, screen_size)));
             ctx.draw(0, render_data.indices.len() as i32, 1);
 
             // Uncomment to draw hitboxes
@@ -770,7 +769,7 @@ impl Stage {
                             UniformDesc::new("mvp", UniformType::Mat4),
                             UniformDesc::new("shake_offset", UniformType::Float2),
                             UniformDesc::new("screen_size", UniformType::Float2)
-                            ],
+                        ],
                     },
                     images: vec![],
                 }
@@ -885,13 +884,19 @@ impl EventHandler for Stage {
         self.draw_last_time = date::now();
         match self.ctx.info().backend {
             Backend::OpenGl => {
-                assert!(self.world.asteroids.positions.len() == self.world.asteroids.rotations.len());
-                assert!(self.world.asteroids.positions.len() == self.world.asteroids.collision.len());
-                assert!(self.world.asteroids.positions.len() == self.world.asteroids.render_data.len());
+                assert!(
+                    self.world.asteroids.positions.len() == self.world.asteroids.rotations.len()
+                );
+                assert!(
+                    self.world.asteroids.positions.len() == self.world.asteroids.collision.len()
+                );
+                assert!(
+                    self.world.asteroids.positions.len() == self.world.asteroids.render_data.len()
+                );
                 assert!(self.world.bullets.positions.len() == self.world.bullets.rotations.len());
                 assert!(self.world.bullets.positions.len() == self.world.bullets.collision.len());
                 assert!(self.world.bullets.positions.len() == self.world.bullets.render_data.len());
-        
+
                 RenderSystem::draw(
                     &mut *self.ctx,
                     &self.world.asteroids.positions,
@@ -905,7 +910,6 @@ impl EventHandler for Stage {
                     &self.world.pipelines,
                     &mut self.world.camera_shake,
                     dt
-
                 );
                 RenderSystem::draw(
                     &mut *self.ctx,
