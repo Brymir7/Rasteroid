@@ -9,7 +9,8 @@ const WORLD_HEIGHT: f32 = 600.0;
 const PHYSICS_FRAME_TIME: f32 = 1.0 / 60.0;
 const PLAYER_HITBOX_SIZE: f32 = 10.0;
 const ASTEROID_BASE_SPEED: f32 = 50.0;
-const DEFAULT_SCALE_FACTOR: f32 = 20.0;
+const DEFAULT_DASH_FRAMES: u8 = 20;
+const DEFAULT_DASH_SPEED: f32 = 3.0;
 
 struct Asteroids {
     positions: Vec<Vec2>,
@@ -105,13 +106,41 @@ impl RenderDataCreator {
         );
 
         RenderData {
-            vertices: vertices.to_vec(),
             indices: indices.to_vec(),
             vertex_buffer,
             index_buffer,
             pipeline_handle,
         }
     }
+}
+struct CameraShake {
+    duration: f32,
+    intensity: f32,
+    current_time: f32,
+}
+
+impl CameraShake {
+    fn new(duration: f32, intensity: f32) -> Self {
+        Self {
+            duration,
+            intensity,
+            current_time: 0.0,
+        }
+    }
+
+    fn update(&mut self, dt: f32) -> Vec2 {
+        if self.current_time >= self.duration {
+            return Vec2::ZERO;
+        }
+        self.current_time += dt;
+        let progress = self.current_time / self.duration;
+        let damping = 1.0 - progress;
+
+        let angle = rand::random::<f32>() * std::f32::consts::TAU;
+        let offset = Vec2::new(angle.cos(), angle.sin()) * self.intensity * damping;
+        offset
+    }
+
 }
 enum WorldEvent {
     CameraShake,
@@ -122,6 +151,7 @@ struct World {
     bullets: Bullets,
     player: Player,
     pipelines: Vec<Pipeline>, // refactor into static size array, when all pipelines are known
+    camera_shake: Option<CameraShake>,
 }
 
 impl World {
@@ -154,6 +184,7 @@ impl World {
                 is_dashing: 0,
             },
             pipelines,
+            camera_shake: None,
         }
     }
     fn add_bullet(&mut self, ctx: &mut Context, pos: Vec2, vel: Vec2, rot: f32) {
@@ -177,6 +208,10 @@ impl World {
         match identifier.object_type {
             EntityType::Asteroid => {
                 // we just need to upkeep positions[i] == vel[i] == rot[i] == health[i] == collision[i] == render_data[i]
+                if self.asteroids.positions.len() <= identifier.idx_original_array {
+                    // already removed
+                    return;
+                }
                 self.asteroids.positions.swap_remove(identifier.idx_original_array);
                 self.asteroids.velocities.swap_remove(identifier.idx_original_array);
                 self.asteroids.rotations.swap_remove(identifier.idx_original_array);
@@ -186,6 +221,10 @@ impl World {
             }
             EntityType::Bullet => {
                 // we just need to upkeep positions[i] == vel[i] == rot[i] == health[i] == collision[i] == render_data[i]
+                if self.bullets.positions.len() <= identifier.idx_original_array {
+                    // already removed
+                    return;
+                }
                 self.bullets.positions.swap_remove(identifier.idx_original_array);
                 self.bullets.velocities.swap_remove(identifier.idx_original_array);
                 self.bullets.rotations.swap_remove(identifier.idx_original_array);
@@ -203,11 +242,14 @@ impl World {
         ctx: &mut Context,
         events: Vec<CollisionEvent>
     ) -> Vec<WorldEvent> {
-        // println!("events: {:?}", events);
         let mut world_events = Vec::new();
         for event in events {
             match event.event_type {
                 CollisionEventType::PlayerHit => {
+                    if self.asteroids.health.len() <= event.triggered_by.idx_original_array {
+                        // already removed
+                        continue;
+                    }
                     self.remove_object_by_identifier(&event.triggered_by);
                     self.player.health = self.player.health.saturating_sub(1);
                     if self.player.health == 0 {
@@ -292,9 +334,19 @@ impl World {
         }
         if self.player.is_dashing > 0 {
             self.player.is_dashing -= 1;
-            self.player.pos += self.player.vel * PHYSICS_FRAME_TIME * 5.0;
+            self.player.pos += self.player.vel * DEFAULT_DASH_SPEED * PHYSICS_FRAME_TIME;
         } else {
             self.player.pos += self.player.vel * PHYSICS_FRAME_TIME;
+        }
+        if self.player.pos.x < 0.0 {
+            self.player.pos.x = WORLD_WIDTH;
+        } else if self.player.pos.x > WORLD_WIDTH {
+            self.player.pos.x = 0.0;
+        }
+        if self.player.pos.y < 0.0 {
+            self.player.pos.y = WORLD_HEIGHT;
+        } else if self.player.pos.y > WORLD_HEIGHT {
+            self.player.pos.y = 0.0;
         }
 
         let world_events = self.handle_collision_events(
@@ -332,10 +384,10 @@ impl World {
         for event in events {
             match event {
                 WorldEvent::CameraShake => {
-                    // TODO
+                    self.camera_shake = Some(CameraShake::new(0.5, 10.0));
                 }
                 WorldEvent::PlayerDeath => {
-                    println!("Player died!");
+                    // println!("Player died!");
                     self.player.pos = Vec2::new(WORLD_WIDTH / 2.0, WORLD_HEIGHT / 2.0);
                     self.player.vel = Vec2::new(0.0, 0.0);
                     self.player.rot = 0.0;
@@ -344,45 +396,6 @@ impl World {
                 }
             }
         }
-    }
-    fn draw(&self, ctx: &mut Context) {
-        assert!(self.asteroids.positions.len() == self.asteroids.rotations.len());
-        assert!(self.asteroids.positions.len() == self.asteroids.collision.len());
-        assert!(self.asteroids.positions.len() == self.asteroids.render_data.len());
-
-        RenderSystem::draw(
-            ctx,
-            &self.asteroids.positions,
-            &self.asteroids.rotations,
-            &self.asteroids.collision
-                .iter()
-                .map(|c| c.radius)
-                .collect::<Vec<_>>(),
-            &self.asteroids.render_data,
-            &vec![EntityType::Asteroid; self.asteroids.positions.len()],
-            &self.pipelines
-        );
-        RenderSystem::draw(
-            ctx,
-            &self.bullets.positions,
-            &self.bullets.rotations,
-            &self.bullets.collision
-                .iter()
-                .map(|c| c.radius)
-                .collect::<Vec<_>>(),
-            &self.bullets.render_data,
-            &vec![EntityType::Bullet; self.bullets.positions.len()],
-            &self.pipelines
-        );
-        RenderSystem::draw(
-            ctx,
-            &vec![self.player.pos],
-            &vec![self.player.rot],
-            &vec![self.player.collision.radius],
-            &vec![self.player.render_data.clone()],
-            &vec![EntityType::Player],
-            &self.pipelines
-        );
     }
 }
 
@@ -393,7 +406,6 @@ struct Collision {
 
 #[derive(Clone)]
 struct RenderData {
-    vertices: Vec<Vec2>,
     indices: Vec<u16>,
     vertex_buffer: BufferId,
     index_buffer: BufferId,
@@ -520,10 +532,12 @@ impl RenderSystem {
         radii: &[f32],
         render_data: &[RenderData],
         entity_types: &[EntityType],
-        pipelines: &[Pipeline]
+        pipelines: &[Pipeline],
+        camera_shake: &mut Option<CameraShake>,
+        dt : f32
     ) {
         let proj = Mat4::orthographic_rh_gl(0.0, WORLD_WIDTH, WORLD_HEIGHT, 0.0, -1.0, 1.0);
-
+        let shake_offset = camera_shake.as_mut().map_or(Vec2::ZERO, |shake| shake.update( dt));
         for i in 0..positions.len() {
             let pos = positions[i];
             let rotation = rotations[i];
@@ -555,7 +569,8 @@ impl RenderSystem {
 
             ctx.apply_pipeline(&pipelines[render_data.pipeline_handle as usize]);
             ctx.apply_bindings(&bindings);
-            ctx.apply_uniforms(UniformsSource::table(&mvp));
+            let screen_size = Vec2::new(WORLD_WIDTH, WORLD_HEIGHT);
+            ctx.apply_uniforms(UniformsSource::table(&(mvp, shake_offset, screen_size))); 
             ctx.draw(0, render_data.indices.len() as i32, 1);
 
             // Uncomment to draw hitboxes
@@ -645,8 +660,9 @@ struct BackgroundRenderer {
 struct Stage {
     world: World,
     ctx: Box<dyn RenderingBackend>,
-    elapsed_time: f32,
-    last_time: f64,
+    physics_elapsed_time: f32,
+    physics_last_time: f64,
+    draw_last_time: f64,
     pressed_keys: HashSet<KeyCode>,
     asteroid_spawner: AsteroidSpawner,
     background_renderer: BackgroundRenderer,
@@ -657,6 +673,13 @@ impl Stage {
         let mut ctx = window::new_rendering_backend();
         let pipelines = Stage::load_pipelines(&mut *ctx);
         let mut world = World::new(&mut *ctx, pipelines);
+        world.add_asteroid(
+            &mut *ctx,
+            Vec2::new(WORLD_WIDTH / 4.0, WORLD_HEIGHT / 4.0),
+            Vec2::new(ASTEROID_BASE_SPEED, ASTEROID_BASE_SPEED),
+            0.0,
+            3
+        );
         // for i in 1..5 {
         //     world.add_asteroid(
         //         &mut *ctx,
@@ -672,13 +695,6 @@ impl Stage {
         //         rand::thread_rng().gen_range(1..4)
         //     );
         // }
-        world.add_asteroid(
-            &mut *ctx,
-            Vec2::new(100.0, 100.0),
-            Vec2::new(ASTEROID_BASE_SPEED, ASTEROID_BASE_SPEED),
-            0.0,
-            3
-        );
         let background_shader = ctx
             .new_shader(
                 ShaderSource::Glsl {
@@ -729,8 +745,9 @@ impl Stage {
         Stage {
             world,
             ctx,
-            elapsed_time: 0.0,
-            last_time: date::now(),
+            physics_elapsed_time: 0.0,
+            physics_last_time: date::now(),
+            draw_last_time: date::now(),
             pressed_keys: HashSet::new(),
             asteroid_spawner: AsteroidSpawner::default(),
             background_renderer: BackgroundRenderer {
@@ -744,15 +761,16 @@ impl Stage {
         let asteroid_shader = ctx
             .new_shader(
                 ShaderSource::Glsl {
-                    vertex: include_str!("asteroid_vertex.glsl"),
+                    vertex: include_str!("vertex.glsl"),
                     fragment: include_str!("asteroid_fragment.glsl"),
                 },
                 ShaderMeta {
                     uniforms: UniformBlockLayout {
                         uniforms: vec![
                             UniformDesc::new("mvp", UniformType::Mat4),
-                            UniformDesc::new("dist_player", UniformType::Float2)
-                        ],
+                            UniformDesc::new("shake_offset", UniformType::Float2),
+                            UniformDesc::new("screen_size", UniformType::Float2)
+                            ],
                     },
                     images: vec![],
                 }
@@ -766,7 +784,11 @@ impl Stage {
                 },
                 ShaderMeta {
                     uniforms: UniformBlockLayout {
-                        uniforms: vec![UniformDesc::new("mvp", UniformType::Mat4)],
+                        uniforms: vec![
+                            UniformDesc::new("mvp", UniformType::Mat4),
+                            UniformDesc::new("shake_offset", UniformType::Float2),
+                            UniformDesc::new("screen_size", UniformType::Float2)
+                        ],
                     },
                     images: vec![],
                 }
@@ -841,12 +863,17 @@ impl Stage {
 
 impl EventHandler for Stage {
     fn update(&mut self) {
-        self.elapsed_time += (date::now() - self.last_time) as f32;
-        self.last_time = date::now();
+        self.physics_elapsed_time += (date::now() - self.physics_last_time) as f32;
+        self.physics_last_time = date::now();
 
-        while self.elapsed_time >= PHYSICS_FRAME_TIME {
+        while self.physics_elapsed_time >= PHYSICS_FRAME_TIME {
+            // let start = date::now();
             self.world.update(&mut *self.ctx);
-            self.elapsed_time -= PHYSICS_FRAME_TIME;
+            // let end = date::now();
+            // println!("Physics update took: {}", end - start);
+            // println!("FPS: {}", 1.0 / (end - start));
+            // println!("Asteroids: {}", self.world.asteroids.positions.len());
+            self.physics_elapsed_time -= PHYSICS_FRAME_TIME;
             let player_pos = self.world.player.pos;
             self.asteroid_spawner.update(&mut self.world, &mut *self.ctx, player_pos);
         }
@@ -854,10 +881,57 @@ impl EventHandler for Stage {
 
     fn draw(&mut self) {
         self.draw_background();
-
+        let dt = (date::now() - self.draw_last_time) as f32;
+        self.draw_last_time = date::now();
         match self.ctx.info().backend {
             Backend::OpenGl => {
-                self.world.draw(&mut *self.ctx);
+                assert!(self.world.asteroids.positions.len() == self.world.asteroids.rotations.len());
+                assert!(self.world.asteroids.positions.len() == self.world.asteroids.collision.len());
+                assert!(self.world.asteroids.positions.len() == self.world.asteroids.render_data.len());
+                assert!(self.world.bullets.positions.len() == self.world.bullets.rotations.len());
+                assert!(self.world.bullets.positions.len() == self.world.bullets.collision.len());
+                assert!(self.world.bullets.positions.len() == self.world.bullets.render_data.len());
+        
+                RenderSystem::draw(
+                    &mut *self.ctx,
+                    &self.world.asteroids.positions,
+                    &self.world.asteroids.rotations,
+                    &self.world.asteroids.collision
+                        .iter()
+                        .map(|c| c.radius)
+                        .collect::<Vec<_>>(),
+                    &self.world.asteroids.render_data,
+                    &vec![EntityType::Asteroid; self.world.asteroids.positions.len()],
+                    &self.world.pipelines,
+                    &mut self.world.camera_shake,
+                    dt
+
+                );
+                RenderSystem::draw(
+                    &mut *self.ctx,
+                    &self.world.bullets.positions,
+                    &self.world.bullets.rotations,
+                    &self.world.bullets.collision
+                        .iter()
+                        .map(|c| c.radius)
+                        .collect::<Vec<_>>(),
+                    &self.world.bullets.render_data,
+                    &vec![EntityType::Bullet; self.world.bullets.positions.len()],
+                    &self.world.pipelines,
+                    &mut self.world.camera_shake,
+                    dt
+                );
+                RenderSystem::draw(
+                    &mut *self.ctx,
+                    &vec![self.world.player.pos],
+                    &vec![self.world.player.rot],
+                    &vec![self.world.player.collision.radius],
+                    &vec![self.world.player.render_data.clone()],
+                    &vec![EntityType::Player],
+                    &self.world.pipelines,
+                    &mut self.world.camera_shake,
+                    dt
+                );
             }
             _ => {}
         }
@@ -868,7 +942,9 @@ impl EventHandler for Stage {
         self.pressed_keys.insert(keycode);
         self.world.player.vel = Self::calculate_velocity(&self.pressed_keys) * 100.0;
         if keycode == KeyCode::Space {
-            self.world.player.is_dashing = 10;
+            if self.world.player.is_dashing == 0 {
+                self.world.player.is_dashing = DEFAULT_DASH_FRAMES;
+            }
         }
     }
 
