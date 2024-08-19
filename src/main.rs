@@ -213,6 +213,11 @@ impl World {
                     world_events.push(WorldEvent::CameraShake);
                 }
                 CollisionEventType::AsteroidHit => {
+                    if self.asteroids.health.len() <= event.target.idx_original_array {
+                        // already removed
+                        continue;
+                    }
+
                     let original_health =
                         self.asteroids.base_healths[event.target.idx_original_array];
                     let pos = self.asteroids.positions[event.target.idx_original_array];
@@ -241,6 +246,10 @@ impl World {
                     }
                 }
                 CollisionEventType::BulletHit => {
+                    if self.bullets.health.len() <= event.target.idx_original_array {
+                        // already removed
+                        continue;
+                    }
                     if self.bullets.health[event.target.idx_original_array] < 2 {
                         self.remove_object_by_identifier(&event.target);
                         continue;
@@ -611,7 +620,7 @@ impl AsteroidSpawner {
         Self {
             spawn_timer: 0.0,
             spawn_interval: 2.0,
-            difficulty_multiplier: 3.0,
+            difficulty_multiplier: 1.0,
         }
     }
 
@@ -852,7 +861,7 @@ impl EventHandler for Stage {
             self.world.update(&mut *self.ctx);
             self.elapsed_time -= PHYSICS_FRAME_TIME;
             let player_pos = self.world.player.pos;
-            // self.asteroid_spawner.update(&mut self.world, &mut *self.ctx, player_pos);
+            self.asteroid_spawner.update(&mut self.world, &mut *self.ctx, player_pos);
         }
     }
 
