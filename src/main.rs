@@ -198,7 +198,11 @@ impl World {
             }
         }
     }
-    fn handle_collision_events(&mut self, ctx: &mut Context, events: Vec<CollisionEvent>) -> Vec<WorldEvent> {
+    fn handle_collision_events(
+        &mut self,
+        ctx: &mut Context,
+        events: Vec<CollisionEvent>
+    ) -> Vec<WorldEvent> {
         // println!("events: {:?}", events);
         let mut world_events = Vec::new();
         for event in events {
@@ -292,40 +296,34 @@ impl World {
         } else {
             self.player.pos += self.player.vel * PHYSICS_FRAME_TIME;
         }
-        let mut all_positions = self.asteroids.positions.clone();
-        all_positions.extend(self.bullets.positions.iter());
-        all_positions.push(self.player.pos);
 
-        let mut all_radii: Vec<f32> = self.asteroids.collision
-            .iter()
-            .map(|c| c.radius)
-            .collect();
-        all_radii.extend(self.bullets.collision.iter().map(|c| c.radius));
-        all_radii.push(self.player.collision.radius);
-
-        let mut all_types: Vec<EntityType> =
-            vec![EntityType::Asteroid; self.asteroids.positions.len()];
-        all_types.extend(vec![EntityType::Bullet; self.bullets.positions.len()]);
-        all_types.push(EntityType::Player);
-
-        let mut all_indices: Vec<usize> = self.asteroids.positions
-            .iter()
-            .enumerate()
-            .map(|(i, _)| i)
-            .collect();
-        all_indices.extend(
-            self.bullets.positions
-                .iter()
-                .enumerate()
-                .map(|(i, _)| i)
-        );
-        all_indices.push(0);
-        assert!(all_positions.len() == all_radii.len());
-        assert!(all_positions.len() == all_types.len());
-        assert!(all_positions.len() == all_indices.len());
         let world_events = self.handle_collision_events(
             ctx,
-            CollisionSystem::update(&all_positions, &all_radii, &all_types, &all_indices)
+            CollisionSystem::run_asteroid_bullet_collision(
+                &self.bullets.positions,
+                &self.asteroids.positions,
+                &self.bullets.collision
+                    .iter()
+                    .map(|c| c.radius)
+                    .collect::<Vec<_>>(),
+                &self.asteroids.collision
+                    .iter()
+                    .map(|c| c.radius)
+                    .collect::<Vec<_>>()
+            )
+                .into_iter()
+                .chain(
+                    CollisionSystem::run_player_asteroid_collision(
+                        &self.player.pos,
+                        &self.asteroids.positions,
+                        self.player.collision.radius,
+                        &self.asteroids.collision
+                            .iter()
+                            .map(|c| c.radius)
+                            .collect::<Vec<_>>()
+                    )
+                )
+                .collect()
         );
         self.handle_world_events(world_events);
     }
@@ -445,79 +443,68 @@ struct CollisionEvent {
 struct CollisionSystem;
 
 impl CollisionSystem {
-    fn update(
-        positions: &[Vec2],
-        radii: &[f32],
-        entity_types: &[EntityType],
-        indices: &[usize]
+    fn run_asteroid_bullet_collision(
+        bullet_positions: &[Vec2],
+        asteroid_positions: &[Vec2],
+        bullet_radii: &[f32],
+        asteroid_radii: &[f32]
     ) -> Vec<CollisionEvent> {
         let mut events = Vec::new();
 
-        for i in 0..positions.len() {
-            for j in i + 1..positions.len() {
-                let distance = positions[i].distance(positions[j]);
-                if distance < radii[i] + radii[j] {
-                    let type1 = entity_types[i];
-                    let type2 = entity_types[j];
-                    let entity1 = indices[i];
-                    let entity2 = indices[j];
-
-                    match (type1, type2) {
-                        | (EntityType::Bullet, EntityType::Asteroid)
-                        | (EntityType::Asteroid, EntityType::Bullet) => {
-                            let (bullet_idx, asteroid_idx) = if let EntityType::Bullet = type1 {
-                                (entity1, entity2)
-                            } else {
-                                (entity2, entity1)
-                            };
-
-                            events.push(CollisionEvent {
-                                event_type: CollisionEventType::AsteroidHit,
-                                triggered_by: ObjectIdentifier {
-                                    idx_original_array: bullet_idx,
-                                    object_type: EntityType::Bullet,
-                                },
-                                target: ObjectIdentifier {
-                                    idx_original_array: asteroid_idx,
-                                    object_type: EntityType::Asteroid,
-                                },
-                            });
-                            events.push(CollisionEvent {
-                                event_type: CollisionEventType::BulletHit,
-                                triggered_by: ObjectIdentifier {
-                                    idx_original_array: asteroid_idx,
-                                    object_type: EntityType::Asteroid,
-                                },
-                                target: ObjectIdentifier {
-                                    idx_original_array: bullet_idx,
-                                    object_type: EntityType::Bullet,
-                                },
-                            });
-                        }
-                        | (EntityType::Player, EntityType::Asteroid)
-                        | (EntityType::Asteroid, EntityType::Player) => {
-                            let asteroid_idx = if let EntityType::Asteroid = type1 {
-                                entity1
-                            } else {
-                                entity2
-                            };
-                            {
-                                events.push(CollisionEvent {
-                                    event_type: CollisionEventType::PlayerHit,
-                                    triggered_by: ObjectIdentifier {
-                                        idx_original_array: asteroid_idx,
-                                        object_type: EntityType::Asteroid,
-                                    },
-                                    target: ObjectIdentifier {
-                                        idx_original_array: indices.len() - 1, // Player index
-                                        object_type: EntityType::Player,
-                                    },
-                                });
-                            }
-                        }
-                        _ => {}
-                    }
+        for (bullet_idx, &bullet_pos) in bullet_positions.iter().enumerate() {
+            for (asteroid_idx, &asteroid_pos) in asteroid_positions.iter().enumerate() {
+                let distance = bullet_pos.distance(asteroid_pos);
+                if distance < bullet_radii[bullet_idx] + asteroid_radii[asteroid_idx] {
+                    events.push(CollisionEvent {
+                        event_type: CollisionEventType::AsteroidHit,
+                        triggered_by: ObjectIdentifier {
+                            idx_original_array: bullet_idx,
+                            object_type: EntityType::Bullet,
+                        },
+                        target: ObjectIdentifier {
+                            idx_original_array: asteroid_idx,
+                            object_type: EntityType::Asteroid,
+                        },
+                    });
+                    events.push(CollisionEvent {
+                        event_type: CollisionEventType::BulletHit,
+                        triggered_by: ObjectIdentifier {
+                            idx_original_array: asteroid_idx,
+                            object_type: EntityType::Asteroid,
+                        },
+                        target: ObjectIdentifier {
+                            idx_original_array: bullet_idx,
+                            object_type: EntityType::Bullet,
+                        },
+                    });
                 }
+            }
+        }
+        events
+    }
+
+    fn run_player_asteroid_collision(
+        player_position: &Vec2,
+        asteroid_positions: &[Vec2],
+        player_radius: f32,
+        asteroid_radii: &[f32]
+    ) -> Vec<CollisionEvent> {
+        let mut events = Vec::new();
+
+        for (asteroid_idx, &asteroid_pos) in asteroid_positions.iter().enumerate() {
+            let distance = player_position.distance(asteroid_pos);
+            if distance < player_radius + asteroid_radii[asteroid_idx] {
+                events.push(CollisionEvent {
+                    event_type: CollisionEventType::PlayerHit,
+                    triggered_by: ObjectIdentifier {
+                        idx_original_array: asteroid_idx,
+                        object_type: EntityType::Asteroid,
+                    },
+                    target: ObjectIdentifier {
+                        idx_original_array: 0, // Assuming player is always index 0
+                        object_type: EntityType::Player,
+                    },
+                });
             }
         }
         events
