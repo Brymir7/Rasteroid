@@ -6,12 +6,6 @@
 
 **Rasteroid** is an unpolished clone of the classic Asteroids game, created as a personal learning project to explore the graphics pipeline, implement post processing effects (like camera shake), and take initial steps into data-oriented design (DOD).
 
-## Features
-
-- **Graphics Pipeline**: Using miniquad instead of Macroquad to have more manual control.
-- **Shader Effects**: Camera shake using shaders, providing insight into GPU-based visual effects.
-- **Data-Oriented Design**: Tested out multiple ways of organizing the data.
-
 ## Limitations
 
 - No animations
