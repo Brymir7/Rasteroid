@@ -4,7 +4,7 @@
 
 ## Overview
 
-**Rasteroid** is an unpolished clone of the classic Asteroids game, created as a personal learning project to explore the graphics pipeline, implement shaders (like camera shake), and take initial steps into data-oriented design (DOD).
+**Rasteroid** is an unpolished clone of the classic Asteroids game, created as a personal learning project to explore the graphics pipeline, implement post processing effects (like camera shake), and take initial steps into data-oriented design (DOD).
 
 ## Features
 
